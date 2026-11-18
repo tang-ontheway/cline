@@ -1239,4 +1239,63 @@ describe("createProviderConfigStore", () => {
 		// the SDK's writeModelsFileSync enforces.
 		expect(() => StoredModelEntrySchema.parse(entry)).not.toThrow()
 	})
+
+	it("resolves Bedrock custom model ARN using aws.customModelBaseId catalog metadata in resolveRuntimeModelSelection", async () => {
+		const baseModelId = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+		const customArn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123"
+		mocks.setGeneratedModels("bedrock", {
+			[baseModelId]: {
+				...modelInfoA,
+				name: "Claude Sonnet 4.5",
+				contextWindow: 200_000,
+				maxTokens: 64_000,
+				supportsImages: true,
+			},
+		})
+		mocks.setProviderSettings({
+			bedrock: {
+				provider: "bedrock",
+				aws: {
+					customModelBaseId: baseModelId,
+				},
+			},
+		})
+
+		const { resolveRuntimeModelSelection } = await import("./store")
+		const resolved = resolveRuntimeModelSelection(parseProviderId("bedrock"), customArn)
+
+		expect(resolved.modelId).toBe(customArn)
+		expect(resolved.modelInfoSource).toBe("catalog")
+		expect(resolved.modelInfo.contextWindow).toBe(200_000)
+		expect(resolved.modelInfo.maxTokens).toBe(64_000)
+		expect(resolved.modelInfo.supportsImages).toBe(true)
+	})
+
+	it("resolves Bedrock custom model ARN using mode-specific AwsBedrockCustomModelBaseId state in readSelection", async () => {
+		const baseModelId = "anthropic.claude-haiku-4-5-20251001-v1:0"
+		const customArn = "arn:aws:bedrock:us-west-2:123456789012:inference-profile/custom-haiku"
+		mocks.setGeneratedModels("bedrock", {
+			[baseModelId]: {
+				...modelInfoB,
+				name: "Claude Haiku 4.5",
+				contextWindow: 1_000_000,
+				maxTokens: 16_384,
+			},
+		})
+		mocks.setApiConfiguration({
+			actModeApiProvider: "bedrock",
+			actModeApiModelId: customArn,
+			actModeAwsBedrockCustomSelected: true,
+			actModeAwsBedrockCustomModelBaseId: baseModelId,
+		})
+
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const selection = store.readSelection(parseProviderId("bedrock"), "act")
+
+		expect(selection?.modelId).toBe(customArn)
+		expect(selection?.modelInfoSource).toBe("catalog")
+		expect(selection?.modelInfo.contextWindow).toBe(1_000_000)
+		expect(selection?.modelInfo.maxTokens).toBe(16_384)
+	})
 })

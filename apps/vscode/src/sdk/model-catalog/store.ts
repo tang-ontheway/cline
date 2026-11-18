@@ -439,7 +439,35 @@ interface BaseModelInfoCandidate {
 	source: "catalog" | "state" | "fallback"
 }
 
-function resolveSelection(selection: ModelSelection, baseModelInfoHint?: BaseModelInfoHint): ResolvedModelSelection {
+function readBedrockCustomModelBaseId(providerId: ProviderId, mode?: Mode): string | undefined {
+	if (providerKey(providerId) !== "bedrock") {
+		return undefined
+	}
+	const stateManager = StateManager.get()
+	const apiConfiguration = stateManager.getApiConfiguration()
+	const activeMode: Mode = mode ?? (stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act")
+	const primaryKey = activeMode === "plan" ? "planModeAwsBedrockCustomModelBaseId" : "actModeAwsBedrockCustomModelBaseId"
+	const fallbackKey = activeMode === "plan" ? "actModeAwsBedrockCustomModelBaseId" : "planModeAwsBedrockCustomModelBaseId"
+	for (const candidate of [apiConfiguration[primaryKey], apiConfiguration[fallbackKey]]) {
+		if (typeof candidate === "string") {
+			const trimmed = candidate.trim()
+			if (trimmed.length > 0) {
+				return trimmed
+			}
+		}
+	}
+	const settings = getProviderSettings(providerId)
+	const aws = isRecord(settings.aws) ? settings.aws : undefined
+	if (typeof aws?.customModelBaseId === "string") {
+		const trimmed = aws.customModelBaseId.trim()
+		if (trimmed.length > 0) {
+			return trimmed
+		}
+	}
+	return undefined
+}
+
+function resolveSelection(selection: ModelSelection, baseModelInfoHint?: BaseModelInfoHint, mode?: Mode): ResolvedModelSelection {
 	const overrides = normalizeModelSelectionOverrides(
 		selection.overrides ?? readModelOverrides(selection.providerId, selection.modelId),
 	)
@@ -447,7 +475,13 @@ function resolveSelection(selection: ModelSelection, baseModelInfoHint?: BaseMod
 	// win even when a private/dynamic provider reuses an id from the static SDK
 	// catalog. Persisted state is weaker by default; the private-catalog
 	// exception is applied below.
-	const catalogModelInfo = readBaseModelInfoForProvider(selection.providerId, selection.modelId)
+	let catalogModelInfo = readBaseModelInfoForProvider(selection.providerId, selection.modelId)
+	if (!catalogModelInfo) {
+		const customModelBaseId = readBedrockCustomModelBaseId(selection.providerId, mode)
+		if (customModelBaseId && customModelBaseId !== selection.modelId) {
+			catalogModelInfo = readBaseModelInfoForProvider(selection.providerId, customModelBaseId)
+		}
+	}
 	const liveCatalogHint = baseModelInfoHint?.source === "catalog" ? baseModelInfoHint.modelInfo : undefined
 	const stateModelInfoHint = baseModelInfoHint?.source === "state" ? baseModelInfoHint.modelInfo : undefined
 	const liveCatalogCandidate: BaseModelInfoCandidate | undefined = liveCatalogHint
@@ -925,6 +959,12 @@ function readSelectionFromState(providerId: ProviderId, mode: Mode): ResolvedMod
 	}
 
 	if (!isKnownModelIdForProvider(providerId, modelId)) {
+		if (readBedrockCustomModelBaseId(providerId, mode)) {
+			if (rememberedSelection && rememberedSelection.modelId === modelId) {
+				return rememberedSelection
+			}
+			return resolveSelection({ providerId, modelId }, undefined, mode)
+		}
 		return rememberedSelection ?? providerSettingsSelection
 	}
 
